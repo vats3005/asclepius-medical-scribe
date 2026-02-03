@@ -14,7 +14,7 @@ import urllib.parse
 from datetime import datetime
 
 # 1. PAGE SETUP
-st.set_page_config(layout="wide", page_title="Asclepius V13 Precision", page_icon="⚕️")
+st.set_page_config(layout="wide", page_title="Asclepius V14 Universal", page_icon="⚕️")
 
 # --- OLYMPIAN GOLD THEME ---
 st.markdown("""
@@ -239,14 +239,14 @@ except:
 
 # 7. UI NAVIGATION
 with st.sidebar:
-    st.title("🏛️ Asclepius V13")
+    st.title("🏛️ Asclepius V14")
     st.caption(f"Physician: {st.session_state.doctor_name}")
     st.markdown("---")
     menu = st.radio("NAVIGATION", ["Consultation Chamber", "Archive & Records", "Analytics Dashboard", "Settings"])
 
 if menu == "Consultation Chamber":
     st.header(f"🎙️ Session with {st.session_state.doctor_name}")
-    st.info("ℹ️ PDF Generator supports only English. Hindi characters will be removed to prevent errors.")
+    st.info("ℹ️ Speaking in Hindi? No problem. The AI will translate everything to English automatically.")
 
     if "draft_rx" not in st.session_state: st.session_state.draft_rx = ""
     if "draft_notes" not in st.session_state: st.session_state.draft_notes = ""
@@ -265,29 +265,31 @@ if menu == "Consultation Chamber":
         if audio and st.button("Analyze Audio ⚡"):
             transcription = client.audio.transcriptions.create(file=("rec.wav", audio), model="whisper-large-v3", response_format="text")
             
-            # --- PRECISION PROMPT (FIXED) ---
+            # --- THE UNIVERSAL TRANSLATOR PROMPT ---
             system_prompt = """
-            You are a Clinical Data Extraction Engine. 
-            Goal: Extract Name, Vitals, Diagnosis, and EXACT Prescription details.
+            You are a Medical Translator and Data Extraction Engine.
+            
+            STEP 1: TRANSLATE.
+            If the audio is in Hindi, Hinglish, or any other language, TRANSLATE IT TO ENGLISH FIRST. 
+            Do not output Hindi characters. Use standard medical English terminology.
+            
+            STEP 2: EXTRACT.
+            Extract the following fields from your English translation.
             
             CRITICAL RULES FOR MEDICATIONS (Rx):
-            1. You MUST capture the Dosage (e.g., 500mg).
-            2. You MUST capture the Frequency (e.g., Twice a day, Once daily, TDS, BD).
-            3. You MUST capture the Duration (e.g., for 5 days).
-            4. Do NOT summarize. If the doctor says "Metformin 500mg morning and night," write "Metformin 500mg (Morning and Night)".
+            - Capture Dosage, Frequency, and Duration.
+            - Example Input: "Dolo subah sham do din ke liye" -> Output Rx: "Dolo 650mg (Twice a day for 2 days)"
             
             Format (Key: Value):
-            Name: [Name]
+            Name: [Name in English]
             Age: [Age or '--']
             BP: [BP or '--']
             Pulse: [Pulse or '--']
             Weight: [Weight or '--']
             Temp: [Temp or '--']
-            Diagnosis: [Diagnosis]
-            Rx: [Medication Name] [Dosage] [Frequency] [Duration]
-            Notes: [Clinical Remarks]
-            
-            If a field is missing, write '--'.
+            Diagnosis: [Diagnosis in English]
+            Rx: [Medication List in English]
+            Notes: [Clinical Remarks in English]
             """
             
             res = client.chat.completions.create(
@@ -332,15 +334,14 @@ if menu == "Consultation Chamber":
             body = st.text_area("Prescription Draft", st.session_state.draft_rx, height=250)
             notes = st.text_area("👨‍⚕️ Clinical Notes", st.session_state.draft_notes, height=100)
             
-            # --- AUTO-DOWNLOAD (RESTORED WITH SAFETY) ---
-            # 1. Clean Inputs FIRST (Crash Protection)
+            # --- AUTO-DOWNLOAD LOGIC ---
             vitals_clean = {
                 "BP": clean_text_forcefully(st.session_state.v_bp), 
                 "Pulse": clean_text_forcefully(st.session_state.v_pulse), 
                 "Weight": clean_text_forcefully(st.session_state.v_weight), 
                 "Temp": clean_text_forcefully(st.session_state.v_temp)
             }
-            # 2. Generate PDF
+            
             try:
                 pdf_bytes = create_pdf(
                     st.session_state.doctor_name, 
@@ -349,9 +350,7 @@ if menu == "Consultation Chamber":
                     body, notes, vitals_clean
                 )
                 
-                # 3. Save Function
                 def save_and_clear():
-                    # Save CLEANED data to archive
                     save_data(
                         st.session_state.doctor_name, 
                         clean_text_forcefully(st.session_state.v_name), 
@@ -363,7 +362,6 @@ if menu == "Consultation Chamber":
                     st.session_state.v_name = ""
                     st.success("Archived!")
                 
-                # 4. ONE-CLICK BUTTON
                 st.download_button(
                     label="✅ Approve & Download PDF",
                     data=pdf_bytes,
@@ -371,8 +369,8 @@ if menu == "Consultation Chamber":
                     mime="application/pdf",
                     on_click=save_and_clear
                 )
-            except Exception as e:
-                st.error("Error generating PDF. Please ensure no complex symbols are used.")
+            except:
+                st.error("Text Error: Please ensure all text is in English.")
 
 elif menu == "Archive & Records":
     st.header("📂 Archives")
