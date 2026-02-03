@@ -14,7 +14,7 @@ import urllib.parse
 from datetime import datetime
 
 # 1. PAGE SETUP
-st.set_page_config(layout="wide", page_title="Asclepius V15 Final", page_icon="⚕️")
+st.set_page_config(layout="wide", page_title="Asclepius V16 Gatekeeper", page_icon="⚕️")
 
 # --- OLYMPIAN GOLD THEME ---
 st.markdown("""
@@ -65,45 +65,53 @@ st.markdown("""
     
     .grid-header { color: #D4AF37; font-weight: bold; padding: 10px 0; border-bottom: 2px solid #D4AF37; letter-spacing: 1px; }
     .grid-row { border-bottom: 1px solid #333; padding: 15px 0; }
+    
+    /* Login Box Styling */
+    .login-box {
+        padding: 50px;
+        border: 2px solid #D4AF37;
+        border-radius: 10px;
+        background-color: rgba(10, 20, 30, 0.9);
+        text-align: center;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# 2. SETTINGS ENGINE
+# 2. SESSION & AUTH SETUP
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "doctor_name" not in st.session_state:
+    st.session_state.doctor_name = ""
+
+# 3. SETTINGS ENGINE
 SETTINGS_FILE = "clinic_settings.json"
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, "r") as f:
             return json.load(f)
-    return {"doctor_name": "Dr. Strange", "email_user": "", "email_pass": ""}
+    return {"email_user": "", "email_pass": ""} # Name removed from file, now session-based
 
-def save_settings(name, email, password):
-    data = {"doctor_name": name, "email_user": email, "email_pass": password}
+def save_settings(email, password):
+    data = {"email_user": email, "email_pass": password}
     with open(SETTINGS_FILE, "w") as f:
         json.dump(data, f)
-    st.session_state.doctor_name = name
     st.session_state.email_user = email
     st.session_state.email_pass = password
 
 saved_config = load_settings()
-if "doctor_name" not in st.session_state: st.session_state.doctor_name = saved_config["doctor_name"]
 if "email_user" not in st.session_state: st.session_state.email_user = saved_config["email_user"]
 if "email_pass" not in st.session_state: st.session_state.email_pass = saved_config["email_pass"]
 
-# 3. DATA ENGINE
+# 4. HELPER FUNCTIONS
 DB_FILE = "patient_records.csv"
 COLUMNS = ["Date", "Time", "Doctor", "Patient Name", "Age", "Diagnosis", "Full_Prescription", "Doctors_Notes", "BP", "Pulse", "Weight", "Temp"]
 
 def clean_text_forcefully(text):
-    """Aggressively removes AI chatter and non-English chars."""
     if not isinstance(text, str): return str(text)
-    
-    # 1. Remove specific AI phrases
     text = re.sub(r'Here is the.*?:', '', text, flags=re.IGNORECASE)
     text = re.sub(r'Sure, I can.*', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'Based on the audio.*', '', text, flags=re.IGNORECASE)
-    
-    # 2. Convert to ASCII (Strips Hindi/Emoji)
+    text = re.sub(r'Based on.*', '', text, flags=re.IGNORECASE)
     clean = text.encode('ascii', 'ignore').decode('ascii').strip()
     return clean
 
@@ -139,9 +147,7 @@ def delete_record(index):
     df = df.drop(index)
     df.to_csv(DB_FILE, index=False)
 
-# 4. PDF ENGINE (SAFE MODE)
 def create_pdf(doctor_name, name, age, text, notes, vitals):
-    # Apply Safety Filter to ALL inputs before generation
     s_doctor = clean_text_forcefully(doctor_name)
     s_name = clean_text_forcefully(name)
     s_age = clean_text_forcefully(age)
@@ -150,8 +156,6 @@ def create_pdf(doctor_name, name, age, text, notes, vitals):
     
     pdf = FPDF()
     pdf.add_page()
-    
-    # Header
     pdf.set_font("Times", 'B', 24)
     pdf.cell(0, 10, "ASCLEPIUS MEDICAL CENTER", ln=True, align='C')
     pdf.set_font("Times", 'I', 12)
@@ -159,36 +163,28 @@ def create_pdf(doctor_name, name, age, text, notes, vitals):
     pdf.line(10, 30, 200, 30)
     pdf.ln(15)
     
-    # Patient Info
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(100, 10, f"Patient: {s_name}", ln=0)
     pdf.cell(90, 10, f"Age: {s_age} | Date: {datetime.now().strftime('%Y-%m-%d')}", ln=1, align='R')
     pdf.ln(5)
 
-    # Vitals Grid
     pdf.set_font("Arial", 'B', 10)
     pdf.set_fill_color(240, 240, 240)
-    
     v_bp = clean_text_forcefully(vitals.get('BP', '--'))
     v_pulse = clean_text_forcefully(vitals.get('Pulse', '--'))
     v_weight = clean_text_forcefully(vitals.get('Weight', '--'))
     v_temp = clean_text_forcefully(vitals.get('Temp', '--'))
-
     pdf.cell(45, 8, f"BP: {v_bp}", 1, 0, 'C', 1)
     pdf.cell(45, 8, f"Pulse: {v_pulse} bpm", 1, 0, 'C', 1)
     pdf.cell(45, 8, f"Weight: {v_weight} kg", 1, 0, 'C', 1)
     pdf.cell(45, 8, f"Temp: {v_temp} F", 1, 1, 'C', 1)
     pdf.ln(10)
 
-    # Prescription Body
     pdf.set_font("Arial", size=11)
-    
     clean_lines = []
     for line in s_text.split('\n'):
-        # Filter out info lines if AI included them in the body
         if "Patient Name:" in line or "Age:" in line or "BP:" in line or "Notes:" in line or "Weight:" in line: continue
         clean_lines.append(line)
-            
     for line in clean_lines:
         line = line.strip()
         if not line: pdf.ln(5); continue
@@ -199,17 +195,14 @@ def create_pdf(doctor_name, name, age, text, notes, vitals):
             pdf.set_font("Arial", size=11)
             pdf.multi_cell(0, 7, line)
 
-    # Doctor's Notes
     if s_notes and s_notes != "--" and s_notes.strip() != "":
         pdf.ln(10)
         pdf.set_font("Arial", 'B', 12)
         pdf.cell(0, 8, "Clinical Notes:", ln=True)
         pdf.set_font("Arial", 'I', 11)
         pdf.multi_cell(0, 7, s_notes)
-
     return pdf.output(dest='S').encode('latin-1', errors='replace')
 
-# 5. COMMUNICATION
 def send_email(sender, password, recipient, pdf_bytes, patient_name):
     try:
         msg = MIMEMultipart()
@@ -236,233 +229,234 @@ def get_whatsapp_link(phone, text):
     encoded = urllib.parse.quote(final_msg)
     return f"https://wa.me/{phone}?text={encoded}"
 
-# 6. CONFIG
 try:
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 except:
     client = Groq(api_key="YOUR_API_KEY_HERE_IF_LOCAL")
 
-# 7. UI NAVIGATION
-with st.sidebar:
-    st.title("🏛️ Asclepius V15")
-    st.caption(f"Physician: {st.session_state.doctor_name}")
-    st.markdown("---")
-    menu = st.radio("NAVIGATION", ["Consultation Chamber", "Archive & Records", "Analytics Dashboard", "Settings"])
 
-if menu == "Consultation Chamber":
-    st.header(f"🎙️ Session with {st.session_state.doctor_name}")
-    st.info("ℹ️ Speaking in Hindi? No problem. The AI will translate everything to English automatically.")
+# ==========================================
+# 5. THE GATEKEEPER LOGIC (LOGIN SCREEN)
+# ==========================================
 
-    if "draft_rx" not in st.session_state: st.session_state.draft_rx = ""
-    if "draft_notes" not in st.session_state: st.session_state.draft_notes = ""
-    if "v_name" not in st.session_state: st.session_state.v_name = ""
-    if "v_age" not in st.session_state: st.session_state.v_age = ""
-    if "v_bp" not in st.session_state: st.session_state.v_bp = ""
-    if "v_pulse" not in st.session_state: st.session_state.v_pulse = ""
-    if "v_weight" not in st.session_state: st.session_state.v_weight = ""
-    if "v_temp" not in st.session_state: st.session_state.v_temp = ""
-    
-    col1, col2 = st.columns([1, 1.5], gap="large")
-    
-    with col1:
-        st.markdown("### 1. Audio Input")
-        audio = st.audio_input("Recorder")
-        if audio and st.button("Analyze Audio ⚡"):
-            transcription = client.audio.transcriptions.create(file=("rec.wav", audio), model="whisper-large-v3", response_format="text")
-            
-            # --- THE UNIVERSAL TRANSLATOR PROMPT (STRICT SILENCE MODE) ---
-            system_prompt = """
-            You are a Medical Translator and Data Extraction Engine.
-            
-            STEP 1: TRANSLATE.
-            If the audio is in Hindi, Hinglish, or any other language, TRANSLATE IT TO ENGLISH FIRST. 
-            Do not output Hindi characters. Use standard medical English terminology.
-            
-            STEP 2: EXTRACT.
-            Extract the following fields from your English translation.
-            
-            CRITICAL RULES:
-            1. DO NOT include introductory text like "Here is the data" or "Here is the translation".
-            2. Output ONLY the keys and values.
-            3. For Medications (Rx), capture Dosage, Frequency, and Duration.
-            
-            Format (Key: Value):
-            Name: [Name in English]
-            Age: [Age or '--']
-            BP: [BP or '--']
-            Pulse: [Pulse or '--']
-            Weight: [Weight or '--']
-            Temp: [Temp or '--']
-            Diagnosis: [Diagnosis in English]
-            Rx: [Medication List in English]
-            Notes: [Clinical Remarks in English]
-            """
-            
-            res = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": transcription}],
-                temperature=0.0
-            )
-            
-            raw_data = res.choices[0].message.content
-            # Double check cleaning in case prompt leaks info
-            raw_data = clean_text_forcefully(raw_data)
-            
-            lines = raw_data.split('\n')
-            rx_lines = []
-            
-            for line in lines:
-                line = line.strip()
-                if not line: continue
-                
-                if line.startswith("Name:"): st.session_state.v_name = line.replace("Name:", "").strip()
-                elif line.startswith("Patient Name:"): st.session_state.v_name = line.replace("Patient Name:", "").strip()
-                elif line.startswith("Age:"): st.session_state.v_age = line.replace("Age:", "").strip()
-                elif line.startswith("BP:"): st.session_state.v_bp = line.replace("BP:", "").strip()
-                elif line.startswith("Pulse:"): st.session_state.v_pulse = line.replace("Pulse:", "").strip()
-                elif line.startswith("Weight:"): st.session_state.v_weight = line.replace("Weight:", "").strip()
-                elif line.startswith("Temp:"): st.session_state.v_temp = line.replace("Temp:", "").strip()
-                elif line.startswith("Notes:"): st.session_state.draft_notes = line.replace("Notes:", "").strip()
-                else: rx_lines.append(line)
-            
-            st.session_state.draft_rx = "\n".join(rx_lines).strip()
-            st.rerun()
-            
-    with col2:
-        st.markdown("### 2. Vitals & Patient Info")
-        n_col, a_col = st.columns([2, 1])
-        st.session_state.v_name = n_col.text_input("Patient Name", st.session_state.v_name)
-        st.session_state.v_age = a_col.text_input("Age", st.session_state.v_age)
+if not st.session_state.logged_in:
+    # --- LOGIN SCREEN ---
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        st.markdown("<br><br><br>", unsafe_allow_html=True)
+        st.title("⚕️ ASCLEPIUS")
+        st.markdown("### Clinical AI Scribe Login")
         
-        v1, v2, v3, v4 = st.columns(4)
-        st.session_state.v_bp = v1.text_input("BP", st.session_state.v_bp)
-        st.session_state.v_pulse = v2.text_input("Pulse", st.session_state.v_pulse)
-        st.session_state.v_weight = v3.text_input("Weight", st.session_state.v_weight)
-        st.session_state.v_temp = v4.text_input("Temp", st.session_state.v_temp)
-
-        st.markdown("### 3. Prescription & Notes")
-        if st.session_state.draft_rx or st.session_state.draft_notes:
-            body = st.text_area("Prescription Draft", st.session_state.draft_rx, height=250)
-            notes = st.text_area("👨‍⚕️ Clinical Notes", st.session_state.draft_notes, height=100)
+        with st.form("login_form"):
+            name_input = st.text_input("Physician Name", placeholder="e.g. Dr. Stephen Strange")
+            submitted = st.form_submit_button("Enter Clinic ➡️")
             
-            # --- AUTO-DOWNLOAD LOGIC ---
-            vitals_clean = {
-                "BP": clean_text_forcefully(st.session_state.v_bp), 
-                "Pulse": clean_text_forcefully(st.session_state.v_pulse), 
-                "Weight": clean_text_forcefully(st.session_state.v_weight), 
-                "Temp": clean_text_forcefully(st.session_state.v_temp)
-            }
-            
-            try:
-                pdf_bytes = create_pdf(
-                    st.session_state.doctor_name, 
-                    st.session_state.v_name, 
-                    st.session_state.v_age, 
-                    body, notes, vitals_clean
-                )
-                
-                def save_and_clear():
-                    save_data(
-                        st.session_state.doctor_name, 
-                        clean_text_forcefully(st.session_state.v_name), 
-                        st.session_state.v_age, 
-                        "See Rx", body, notes,
-                        st.session_state.v_bp, st.session_state.v_pulse, st.session_state.v_weight, st.session_state.v_temp
-                    )
-                    st.session_state.draft_rx = "" 
-                    st.session_state.v_name = ""
-                    st.success("Archived!")
-                
-                st.download_button(
-                    label="✅ Approve & Download PDF",
-                    data=pdf_bytes,
-                    file_name=f"{clean_text_forcefully(st.session_state.v_name)}_Prescription.pdf",
-                    mime="application/pdf",
-                    on_click=save_and_clear
-                )
-            except:
-                st.error("Text Error: Please ensure all text is in English.")
-
-elif menu == "Archive & Records":
-    st.header("📂 Archives")
-    df = load_data()
-    
-    if not df.empty:
-        c1, c2, c3, c4 = st.columns([2, 2, 4, 3])
-        c1.markdown("<div class='grid-header'>DATE</div>", unsafe_allow_html=True)
-        c2.markdown("<div class='grid-header'>TIME</div>", unsafe_allow_html=True)
-        c3.markdown("<div class='grid-header'>PATIENT</div>", unsafe_allow_html=True)
-        c4.markdown("<div class='grid-header'>ACTIONS</div>", unsafe_allow_html=True)
-        
-        for index, row in df.iterrows():
-            st.markdown("<div class='grid-row'>", unsafe_allow_html=True)
-            c1, c2, c3, c4 = st.columns([2, 2, 4, 3])
-            
-            c1.write(f"📅 {row['Date']}")
-            c2.write(f"🕒 {row['Time']}")
-            age_display = f"(Age: {clean_nan(row['Age'])})" if clean_nan(row['Age']) != "--" else ""
-            c3.markdown(f"**{clean_nan(row['Patient Name'])}** {age_display}")
-            
-            with c4:
-                b1, b2 = st.columns(2)
-                vitals_dict = {"BP": row.get("BP"), "Pulse": row.get("Pulse"), "Weight": row.get("Weight"), "Temp": row.get("Temp")}
-                
-                try:
-                    pdf_data = create_pdf(row['Doctor'], row['Patient Name'], row['Age'], row['Full_Prescription'], row.get('Doctors_Notes'), vitals_dict)
-                    b1.download_button("📄 PDF", pdf_data, file_name=f"{clean_nan(row['Patient Name'])}.pdf", key=f"pdf_{index}")
-                except:
-                    b1.error("PDF Error")
-                
-                if b2.button("🗑️ DEL", key=f"del_{index}"):
-                    delete_record(index)
+            if submitted:
+                if name_input.strip():
+                    st.session_state.doctor_name = name_input
+                    st.session_state.logged_in = True
                     st.rerun()
-            
-            with st.expander(f"📤 Send to {row['Patient Name']}"):
-                s1, s2 = st.columns(2)
-                with s1:
-                    st.markdown("**WhatsApp**")
-                    ph = st.text_input("Phone", key=f"ph_{index}")
-                    if ph:
-                        link = get_whatsapp_link(ph, row['Full_Prescription'])
-                        st.markdown(f"[**➤ Open Chat**]({link})")
-                with s2:
-                    st.markdown("**Email**")
-                    em = st.text_input("Email", key=f"em_{index}")
-                    if st.button("Send 📧", key=f"snd_{index}"):
-                        if st.session_state.email_user:
-                            suc, msg = send_email(st.session_state.email_user, st.session_state.email_pass, em, pdf_data, row['Patient Name'])
-                            if suc: st.success("Sent!")
-                            else: st.error(msg)
-                        else: st.error("Configure Settings.")
-            st.markdown("</div>", unsafe_allow_html=True)
-    else:
-        st.info("No records found.")
+                else:
+                    st.error("Please enter your name to proceed.")
 
-elif menu == "Analytics Dashboard":
-    st.header("📊 Clinic Analytics")
-    df = load_data()
+else:
+    # ==========================================
+    # 6. MAIN APPLICATION (ONLY SHOWS IF LOGGED IN)
+    # ==========================================
     
-    if df.empty:
-        st.warning("Not enough data.")
-    else:
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Patients", len(df))
-        m2.metric("Patients Today", len(df[df['Date'] == datetime.now().strftime("%Y-%m-%d")]))
-        m3.metric("Top Diagnosis", "Unavailable") 
+    with st.sidebar:
+        st.title("🏛️ Asclepius V16")
+        st.caption(f"Physician: {st.session_state.doctor_name}")
+        st.markdown("---")
+        menu = st.radio("NAVIGATION", ["Consultation Chamber", "Archive & Records", "Analytics Dashboard", "Settings"])
         
         st.markdown("---")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("Patient Traffic")
-            st.line_chart(df['Date'].value_counts().sort_index(), color="#D4AF37")
+        if st.button("🚪 Logout / Switch Doctor"):
+            st.session_state.logged_in = False
+            st.session_state.doctor_name = ""
+            st.rerun()
 
-elif menu == "Settings":
-    st.header("⚙️ Settings")
-    new_name = st.text_input("Physician Name", value=st.session_state.doctor_name)
-    e_user = st.text_input("Gmail", value=st.session_state.email_user)
-    e_pass = st.text_input("App Password", value=st.session_state.email_pass, type="password")
-    
-    if st.button("Save Settings"):
-        save_settings(new_name, e_user, e_pass)
-        st.success("Saved!")
-        st.rerun()
+    if menu == "Consultation Chamber":
+        st.header(f"🎙️ Session with {st.session_state.doctor_name}")
+        st.info("ℹ️ Speaking in Hindi? No problem. The AI will translate everything to English automatically.")
+
+        if "draft_rx" not in st.session_state: st.session_state.draft_rx = ""
+        if "draft_notes" not in st.session_state: st.session_state.draft_notes = ""
+        if "v_name" not in st.session_state: st.session_state.v_name = ""
+        if "v_age" not in st.session_state: st.session_state.v_age = ""
+        if "v_bp" not in st.session_state: st.session_state.v_bp = ""
+        if "v_pulse" not in st.session_state: st.session_state.v_pulse = ""
+        if "v_weight" not in st.session_state: st.session_state.v_weight = ""
+        if "v_temp" not in st.session_state: st.session_state.v_temp = ""
+        
+        col1, col2 = st.columns([1, 1.5], gap="large")
+        
+        with col1:
+            st.markdown("### 1. Audio Input")
+            audio = st.audio_input("Recorder")
+            if audio and st.button("Analyze Audio ⚡"):
+                transcription = client.audio.transcriptions.create(file=("rec.wav", audio), model="whisper-large-v3", response_format="text")
+                
+                system_prompt = """
+                You are a Medical Translator and Data Extraction Engine.
+                STEP 1: TRANSLATE Hindi/Hinglish to ENGLISH.
+                STEP 2: EXTRACT.
+                CRITICAL RULES:
+                1. DO NOT include introductory text.
+                2. Output ONLY the keys and values.
+                3. For Medications (Rx), capture Dosage, Frequency, and Duration.
+                
+                Format (Key: Value):
+                Name: [Name in English]
+                Age: [Age or '--']
+                BP: [BP or '--']
+                Pulse: [Pulse or '--']
+                Weight: [Weight or '--']
+                Temp: [Temp or '--']
+                Diagnosis: [Diagnosis in English]
+                Rx: [Medication List in English]
+                Notes: [Clinical Remarks in English]
+                """
+                
+                res = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": transcription}],
+                    temperature=0.0
+                )
+                
+                raw_data = clean_text_forcefully(res.choices[0].message.content)
+                lines = raw_data.split('\n')
+                rx_lines = []
+                
+                for line in lines:
+                    line = line.strip()
+                    if not line: continue
+                    if line.startswith("Name:"): st.session_state.v_name = line.replace("Name:", "").strip()
+                    elif line.startswith("Patient Name:"): st.session_state.v_name = line.replace("Patient Name:", "").strip()
+                    elif line.startswith("Age:"): st.session_state.v_age = line.replace("Age:", "").strip()
+                    elif line.startswith("BP:"): st.session_state.v_bp = line.replace("BP:", "").strip()
+                    elif line.startswith("Pulse:"): st.session_state.v_pulse = line.replace("Pulse:", "").strip()
+                    elif line.startswith("Weight:"): st.session_state.v_weight = line.replace("Weight:", "").strip()
+                    elif line.startswith("Temp:"): st.session_state.v_temp = line.replace("Temp:", "").strip()
+                    elif line.startswith("Notes:"): st.session_state.draft_notes = line.replace("Notes:", "").strip()
+                    else: rx_lines.append(line)
+                
+                st.session_state.draft_rx = "\n".join(rx_lines).strip()
+                st.rerun()
+                
+        with col2:
+            st.markdown("### 2. Vitals & Patient Info")
+            n_col, a_col = st.columns([2, 1])
+            st.session_state.v_name = n_col.text_input("Patient Name", st.session_state.v_name)
+            st.session_state.v_age = a_col.text_input("Age", st.session_state.v_age)
+            
+            v1, v2, v3, v4 = st.columns(4)
+            st.session_state.v_bp = v1.text_input("BP", st.session_state.v_bp)
+            st.session_state.v_pulse = v2.text_input("Pulse", st.session_state.v_pulse)
+            st.session_state.v_weight = v3.text_input("Weight", st.session_state.v_weight)
+            st.session_state.v_temp = v4.text_input("Temp", st.session_state.v_temp)
+
+            st.markdown("### 3. Prescription & Notes")
+            if st.session_state.draft_rx or st.session_state.draft_notes:
+                body = st.text_area("Prescription Draft", st.session_state.draft_rx, height=250)
+                notes = st.text_area("👨‍⚕️ Clinical Notes", st.session_state.draft_notes, height=100)
+                
+                vitals_clean = {
+                    "BP": clean_text_forcefully(st.session_state.v_bp), 
+                    "Pulse": clean_text_forcefully(st.session_state.v_pulse), 
+                    "Weight": clean_text_forcefully(st.session_state.v_weight), 
+                    "Temp": clean_text_forcefully(st.session_state.v_temp)
+                }
+                
+                try:
+                    pdf_bytes = create_pdf(st.session_state.doctor_name, st.session_state.v_name, st.session_state.v_age, body, notes, vitals_clean)
+                    
+                    def save_and_clear():
+                        save_data(st.session_state.doctor_name, clean_text_forcefully(st.session_state.v_name), st.session_state.v_age, "See Rx", body, notes, st.session_state.v_bp, st.session_state.v_pulse, st.session_state.v_weight, st.session_state.v_temp)
+                        st.session_state.draft_rx = "" 
+                        st.session_state.v_name = ""
+                        st.success("Archived!")
+                    
+                    st.download_button(label="✅ Approve & Download PDF", data=pdf_bytes, file_name=f"{clean_text_forcefully(st.session_state.v_name)}_Prescription.pdf", mime="application/pdf", on_click=save_and_clear)
+                except:
+                    st.error("Text Error: Please ensure all text is in English.")
+
+    elif menu == "Archive & Records":
+        st.header("📂 Archives")
+        df = load_data()
+        
+        if not df.empty:
+            c1, c2, c3, c4 = st.columns([2, 2, 4, 3])
+            c1.markdown("<div class='grid-header'>DATE</div>", unsafe_allow_html=True)
+            c2.markdown("<div class='grid-header'>TIME</div>", unsafe_allow_html=True)
+            c3.markdown("<div class='grid-header'>PATIENT</div>", unsafe_allow_html=True)
+            c4.markdown("<div class='grid-header'>ACTIONS</div>", unsafe_allow_html=True)
+            
+            for index, row in df.iterrows():
+                st.markdown("<div class='grid-row'>", unsafe_allow_html=True)
+                c1, c2, c3, c4 = st.columns([2, 2, 4, 3])
+                
+                c1.write(f"📅 {row['Date']}")
+                c2.write(f"🕒 {row['Time']}")
+                age_display = f"(Age: {clean_nan(row['Age'])})" if clean_nan(row['Age']) != "--" else ""
+                c3.markdown(f"**{clean_nan(row['Patient Name'])}** {age_display}")
+                
+                with c4:
+                    b1, b2 = st.columns(2)
+                    vitals_dict = {"BP": row.get("BP"), "Pulse": row.get("Pulse"), "Weight": row.get("Weight"), "Temp": row.get("Temp")}
+                    try:
+                        pdf_data = create_pdf(row['Doctor'], row['Patient Name'], row['Age'], row['Full_Prescription'], row.get('Doctors_Notes'), vitals_dict)
+                        b1.download_button("📄 PDF", pdf_data, file_name=f"{clean_nan(row['Patient Name'])}.pdf", key=f"pdf_{index}")
+                    except:
+                        b1.error("PDF Error")
+                    if b2.button("🗑️ DEL", key=f"del_{index}"):
+                        delete_record(index)
+                        st.rerun()
+                
+                with st.expander(f"📤 Send to {row['Patient Name']}"):
+                    s1, s2 = st.columns(2)
+                    with s1:
+                        st.markdown("**WhatsApp**")
+                        ph = st.text_input("Phone", key=f"ph_{index}")
+                        if ph:
+                            link = get_whatsapp_link(ph, row['Full_Prescription'])
+                            st.markdown(f"[**➤ Open Chat**]({link})")
+                    with s2:
+                        st.markdown("**Email**")
+                        em = st.text_input("Email", key=f"em_{index}")
+                        if st.button("Send 📧", key=f"snd_{index}"):
+                            if st.session_state.email_user:
+                                suc, msg = send_email(st.session_state.email_user, st.session_state.email_pass, em, pdf_data, row['Patient Name'])
+                                if suc: st.success("Sent!")
+                                else: st.error(msg)
+                            else: st.error("Configure Settings.")
+                st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            st.info("No records found.")
+
+    elif menu == "Analytics Dashboard":
+        st.header("📊 Clinic Analytics")
+        df = load_data()
+        
+        if df.empty:
+            st.warning("Not enough data.")
+        else:
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Total Patients", len(df))
+            m2.metric("Patients Today", len(df[df['Date'] == datetime.now().strftime("%Y-%m-%d")]))
+            m3.metric("Top Diagnosis", "Unavailable") 
+            st.markdown("---")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("Patient Traffic")
+                st.line_chart(df['Date'].value_counts().sort_index(), color="#D4AF37")
+
+    elif menu == "Settings":
+        st.header("⚙️ Settings")
+        e_user = st.text_input("Gmail", value=st.session_state.email_user)
+        e_pass = st.text_input("App Password", value=st.session_state.email_pass, type="password")
+        
+        if st.button("Save Settings"):
+            save_settings(e_user, e_pass)
+            st.success("Saved!")
+            st.rerun()
