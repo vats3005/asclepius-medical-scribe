@@ -14,7 +14,7 @@ import urllib.parse
 from datetime import datetime
 
 # 1. PAGE SETUP
-st.set_page_config(layout="wide", page_title="Asclepius V10 Autopilot", page_icon="⚕️")
+st.set_page_config(layout="wide", page_title="Asclepius V11", page_icon="⚕️")
 
 # --- OLYMPIAN GOLD THEME ---
 st.markdown("""
@@ -166,6 +166,7 @@ def create_pdf(doctor_name, name, age, text, notes, vitals):
     clean_rx = clean_text_forcefully(text)
     clean_lines = []
     for line in clean_rx.split('\n'):
+        # Filter out info lines if AI included them in the body
         if "Patient Name:" in line or "Age:" in line or "BP:" in line or "Notes:" in line or "Weight:" in line: continue
         clean_lines.append(line)
             
@@ -224,7 +225,7 @@ except:
 
 # 7. UI NAVIGATION
 with st.sidebar:
-    st.title("🏛️ Asclepius V10")
+    st.title("🏛️ Asclepius V11")
     st.caption(f"Physician: {st.session_state.doctor_name}")
     st.markdown("---")
     menu = st.radio("NAVIGATION", ["Consultation Chamber", "Archive & Records", "Analytics Dashboard", "Settings"])
@@ -235,6 +236,8 @@ if menu == "Consultation Chamber":
     # Initialize States
     if "draft_rx" not in st.session_state: st.session_state.draft_rx = ""
     if "draft_notes" not in st.session_state: st.session_state.draft_notes = ""
+    # Name is now part of the session state explicitly
+    if "v_name" not in st.session_state: st.session_state.v_name = ""
     if "v_age" not in st.session_state: st.session_state.v_age = ""
     if "v_bp" not in st.session_state: st.session_state.v_bp = ""
     if "v_pulse" not in st.session_state: st.session_state.v_pulse = ""
@@ -249,7 +252,6 @@ if menu == "Consultation Chamber":
         if audio and st.button("Analyze Audio ⚡"):
             transcription = client.audio.transcriptions.create(file=("rec.wav", audio), model="whisper-large-v3", response_format="text")
             
-            # --- THE "AUTOPILOT" EXTRACTION PROMPT ---
             system_prompt = """
             You are a Data Extraction Engine. Extract these exact fields.
             Format exactly like this (Key: Value):
@@ -275,62 +277,66 @@ if menu == "Consultation Chamber":
             
             raw_data = res.choices[0].message.content
             
-            # PARSING LOGIC: Distribute AI data to UI fields
+            # PARSING LOGIC
             lines = raw_data.split('\n')
             rx_lines = []
             
             for line in lines:
                 line = line.strip()
-                if line.startswith("Name:"): continue # handled later
+                # Improved Parsing: Check for "Name:" OR "Patient Name:"
+                if line.startswith("Name:"): st.session_state.v_name = line.replace("Name:", "").strip()
+                elif line.startswith("Patient Name:"): st.session_state.v_name = line.replace("Patient Name:", "").strip()
+                
                 elif line.startswith("Age:"): st.session_state.v_age = line.replace("Age:", "").strip()
                 elif line.startswith("BP:"): st.session_state.v_bp = line.replace("BP:", "").strip()
                 elif line.startswith("Pulse:"): st.session_state.v_pulse = line.replace("Pulse:", "").strip()
                 elif line.startswith("Weight:"): st.session_state.v_weight = line.replace("Weight:", "").strip()
                 elif line.startswith("Temp:"): st.session_state.v_temp = line.replace("Temp:", "").strip()
                 elif line.startswith("Notes:"): st.session_state.draft_notes = line.replace("Notes:", "").strip()
-                else: rx_lines.append(line) # Collect Diagnosis/Rx lines
+                else: rx_lines.append(line)
             
             st.session_state.draft_rx = "\n".join(rx_lines).strip()
             st.rerun()
             
     with col2:
-        st.markdown("### 2. Vitals (Auto-Filled)")
-        v0, v1, v2, v3, v4 = st.columns(5)
-        st.session_state.v_age = v0.text_input("Age", st.session_state.v_age)
+        st.markdown("### 2. Vitals & Patient Info")
+        # Added Name Field here so it is VISIBLE and EDITABLE
+        n_col, a_col = st.columns([2, 1])
+        st.session_state.v_name = n_col.text_input("Patient Name", st.session_state.v_name)
+        st.session_state.v_age = a_col.text_input("Age", st.session_state.v_age)
+        
+        v1, v2, v3, v4 = st.columns(4)
         st.session_state.v_bp = v1.text_input("BP", st.session_state.v_bp)
         st.session_state.v_pulse = v2.text_input("Pulse", st.session_state.v_pulse)
         st.session_state.v_weight = v3.text_input("Weight", st.session_state.v_weight)
         st.session_state.v_temp = v4.text_input("Temp", st.session_state.v_temp)
 
-        st.markdown("### 3. Prescription & Notes (Auto-Filled)")
+        st.markdown("### 3. Prescription & Notes")
         if st.session_state.draft_rx or st.session_state.draft_notes:
-            body = st.text_area("Prescription Draft", st.session_state.draft_rx, height=300)
+            body = st.text_area("Prescription Draft", st.session_state.draft_rx, height=250)
             notes = st.text_area("👨‍⚕️ Clinical Notes", st.session_state.draft_notes, height=100)
             
-            # Parsing Name from the raw text body usually requires a backup if not in header
-            # For V10, we trust the Doctor checks the inputs
-            name_extract = "Unknown"
-            if "Name:" in st.session_state.draft_rx: 
-                # Attempt to grab name if it leaked into Rx box, otherwise default
-                pass 
-                
-            # We ask Doctor to confirm Name in a clean box if needed, or extract from body logic
-            # Simplest: Add a Name box to Vitals row
+            # --- AUTO-DOWNLOAD LOGIC ---
+            # 1. Generate PDF Bytes immediately
+            vitals_clean = {"BP": st.session_state.v_bp, "Pulse": st.session_state.v_pulse, "Weight": st.session_state.v_weight, "Temp": st.session_state.v_temp}
+            pdf_bytes = create_pdf(st.session_state.doctor_name, st.session_state.v_name, st.session_state.v_age, body, notes, vitals_clean)
             
-            if st.button("✅ Finalize & Archive"):
-                # Use a helper to extract Name from Rx if present, else "Patient"
-                final_name = "Patient"
-                for line in body.split('\n'):
-                    if "Name:" in line: final_name = line.split("Name:")[1].strip()
-                
-                save_data(st.session_state.doctor_name, final_name, st.session_state.v_age, "See Rx", body, notes,
+            # 2. Define the Save Function
+            def save_and_clear():
+                save_data(st.session_state.doctor_name, st.session_state.v_name, st.session_state.v_age, "See Rx", body, notes,
                           st.session_state.v_bp, st.session_state.v_pulse, st.session_state.v_weight, st.session_state.v_temp)
+                st.session_state.draft_rx = "" # Clear after save
+                st.session_state.v_name = ""
                 st.success("Archived!")
-                
-                # Reset
-                for key in ['v_age', 'v_bp', 'v_pulse', 'v_weight', 'v_temp', 'draft_notes', 'draft_rx']:
-                    st.session_state[key] = ""
-                st.rerun()
+            
+            # 3. The Button does BOTH (Download triggers Save callback)
+            st.download_button(
+                label="✅ Approve & Download PDF",
+                data=pdf_bytes,
+                file_name=f"{st.session_state.v_name}_Prescription.pdf",
+                mime="application/pdf",
+                on_click=save_and_clear
+            )
 
 elif menu == "Archive & Records":
     st.header("📂 Archives")
@@ -349,6 +355,7 @@ elif menu == "Archive & Records":
             
             c1.write(f"📅 {row['Date']}")
             c2.write(f"🕒 {row['Time']}")
+            # Name should now appear correctly because we fixed the save logic
             age_display = f"(Age: {clean_nan(row['Age'])})" if clean_nan(row['Age']) != "--" else ""
             c3.markdown(f"**{clean_nan(row['Patient Name'])}** {age_display}")
             
@@ -393,7 +400,7 @@ elif menu == "Analytics Dashboard":
         m1, m2, m3 = st.columns(3)
         m1.metric("Total Patients", len(df))
         m2.metric("Patients Today", len(df[df['Date'] == datetime.now().strftime("%Y-%m-%d")]))
-        m3.metric("Top Diagnosis", "Unavailable") # Simplified for V10 strict mode
+        m3.metric("Top Diagnosis", "Unavailable") 
         
         st.markdown("---")
         c1, c2 = st.columns(2)
