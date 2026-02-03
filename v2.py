@@ -14,7 +14,7 @@ import urllib.parse
 from datetime import datetime
 
 # 1. PAGE SETUP
-st.set_page_config(layout="wide", page_title="Asclepius V14 Universal", page_icon="⚕️")
+st.set_page_config(layout="wide", page_title="Asclepius V15 Final", page_icon="⚕️")
 
 # --- OLYMPIAN GOLD THEME ---
 st.markdown("""
@@ -95,11 +95,15 @@ DB_FILE = "patient_records.csv"
 COLUMNS = ["Date", "Time", "Doctor", "Patient Name", "Age", "Diagnosis", "Full_Prescription", "Doctors_Notes", "BP", "Pulse", "Weight", "Temp"]
 
 def clean_text_forcefully(text):
-    """Safety Filter: Removes non-English chars to prevent PDF crashes."""
+    """Aggressively removes AI chatter and non-English chars."""
     if not isinstance(text, str): return str(text)
+    
+    # 1. Remove specific AI phrases
     text = re.sub(r'Here is the.*?:', '', text, flags=re.IGNORECASE)
     text = re.sub(r'Sure, I can.*', '', text, flags=re.IGNORECASE)
-    # Convert to ASCII (Strips Hindi/Emoji)
+    text = re.sub(r'Based on the audio.*', '', text, flags=re.IGNORECASE)
+    
+    # 2. Convert to ASCII (Strips Hindi/Emoji)
     clean = text.encode('ascii', 'ignore').decode('ascii').strip()
     return clean
 
@@ -181,6 +185,7 @@ def create_pdf(doctor_name, name, age, text, notes, vitals):
     
     clean_lines = []
     for line in s_text.split('\n'):
+        # Filter out info lines if AI included them in the body
         if "Patient Name:" in line or "Age:" in line or "BP:" in line or "Notes:" in line or "Weight:" in line: continue
         clean_lines.append(line)
             
@@ -239,7 +244,7 @@ except:
 
 # 7. UI NAVIGATION
 with st.sidebar:
-    st.title("🏛️ Asclepius V14")
+    st.title("🏛️ Asclepius V15")
     st.caption(f"Physician: {st.session_state.doctor_name}")
     st.markdown("---")
     menu = st.radio("NAVIGATION", ["Consultation Chamber", "Archive & Records", "Analytics Dashboard", "Settings"])
@@ -265,7 +270,7 @@ if menu == "Consultation Chamber":
         if audio and st.button("Analyze Audio ⚡"):
             transcription = client.audio.transcriptions.create(file=("rec.wav", audio), model="whisper-large-v3", response_format="text")
             
-            # --- THE UNIVERSAL TRANSLATOR PROMPT ---
+            # --- THE UNIVERSAL TRANSLATOR PROMPT (STRICT SILENCE MODE) ---
             system_prompt = """
             You are a Medical Translator and Data Extraction Engine.
             
@@ -276,9 +281,10 @@ if menu == "Consultation Chamber":
             STEP 2: EXTRACT.
             Extract the following fields from your English translation.
             
-            CRITICAL RULES FOR MEDICATIONS (Rx):
-            - Capture Dosage, Frequency, and Duration.
-            - Example Input: "Dolo subah sham do din ke liye" -> Output Rx: "Dolo 650mg (Twice a day for 2 days)"
+            CRITICAL RULES:
+            1. DO NOT include introductory text like "Here is the data" or "Here is the translation".
+            2. Output ONLY the keys and values.
+            3. For Medications (Rx), capture Dosage, Frequency, and Duration.
             
             Format (Key: Value):
             Name: [Name in English]
@@ -299,11 +305,16 @@ if menu == "Consultation Chamber":
             )
             
             raw_data = res.choices[0].message.content
+            # Double check cleaning in case prompt leaks info
+            raw_data = clean_text_forcefully(raw_data)
+            
             lines = raw_data.split('\n')
             rx_lines = []
             
             for line in lines:
                 line = line.strip()
+                if not line: continue
+                
                 if line.startswith("Name:"): st.session_state.v_name = line.replace("Name:", "").strip()
                 elif line.startswith("Patient Name:"): st.session_state.v_name = line.replace("Patient Name:", "").strip()
                 elif line.startswith("Age:"): st.session_state.v_age = line.replace("Age:", "").strip()
