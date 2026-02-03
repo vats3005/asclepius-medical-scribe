@@ -6,6 +6,7 @@ import os
 import re
 import smtplib
 import json
+import math
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -14,7 +15,7 @@ import urllib.parse
 from datetime import datetime
 
 # 1. PAGE SETUP
-st.set_page_config(layout="wide", page_title="Asclepius V8 Clinical", page_icon="⚕️")
+st.set_page_config(layout="wide", page_title="Asclepius V9 Silent", page_icon="⚕️")
 
 # --- OLYMPIAN GOLD THEME ---
 st.markdown("""
@@ -30,21 +31,18 @@ st.markdown("""
         background-attachment: fixed;
     }
 
-    /* TYPOGRAPHY */
     h1, h2, h3 { 
         font-family: 'Cinzel', serif !important; 
         text-transform: uppercase; 
         color: #D4AF37 !important;
     }
     p, label, div, span { font-family: 'Lato', sans-serif; color: #e0e0e0; }
-
-    /* SIDEBAR */
+    
     section[data-testid="stSidebar"] {
         background-color: #0b111a;
         border-right: 1px solid #D4AF37;
     }
 
-    /* INPUTS */
     .stTextArea textarea, .stTextInput input {
         background-color: rgba(10, 15, 20, 0.8) !important;
         border: 1px solid #444 !important;
@@ -52,7 +50,6 @@ st.markdown("""
         color: #fff !important;
     }
     
-    /* BUTTONS */
     .stButton>button {
         width: 100%;
         border: 1px solid #D4AF37;
@@ -67,7 +64,6 @@ st.markdown("""
         border-color: #B8860B;
     }
     
-    /* GRID HEADERS */
     .grid-header { color: #D4AF37; font-weight: bold; padding: 10px 0; border-bottom: 2px solid #D4AF37; letter-spacing: 1px; }
     .grid-row { border-bottom: 1px solid #333; padding: 15px 0; }
 </style>
@@ -95,21 +91,29 @@ if "doctor_name" not in st.session_state: st.session_state.doctor_name = saved_c
 if "email_user" not in st.session_state: st.session_state.email_user = saved_config["email_user"]
 if "email_pass" not in st.session_state: st.session_state.email_pass = saved_config["email_pass"]
 
-# 3. DATA ENGINE (UPDATED FOR AGE & NOTES)
+# 3. DATA ENGINE
 DB_FILE = "patient_records.csv"
 COLUMNS = ["Date", "Time", "Doctor", "Patient Name", "Age", "Diagnosis", "Full_Prescription", "Doctors_Notes", "BP", "Pulse", "Weight", "Temp"]
 
 def clean_text_forcefully(text):
     if not isinstance(text, str): return str(text)
+    # Remove AI "chatty" prefixes if they exist
+    text = re.sub(r'Here is the.*?:', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'Sure, I can.*', '', text, flags=re.IGNORECASE)
     clean = re.sub(r'\*\*|##|\*', '', text)
-    return clean.encode('ascii', 'ignore').decode('ascii')
+    return clean.encode('ascii', 'ignore').decode('ascii').strip()
+
+def clean_nan(val):
+    """Converts nan/None to clean dashed string"""
+    if val is None or pd.isna(val) or str(val).lower() == 'nan':
+        return "--"
+    return str(val)
 
 def load_data():
     if not os.path.exists(DB_FILE):
         return pd.DataFrame(columns=COLUMNS)
     
     df = pd.read_csv(DB_FILE)
-    # Ensure new columns exist if loading old CSV
     for col in COLUMNS:
         if col not in df.columns:
             df[col] = "--"
@@ -140,7 +144,7 @@ def delete_record(index):
     df = df.drop(index)
     df.to_csv(DB_FILE, index=False)
 
-# 4. PDF ENGINE (UPDATED LAYOUT)
+# 4. PDF ENGINE (STRICT & CLEAN)
 def create_pdf(doctor_name, name, age, text, notes, vitals):
     pdf = FPDF()
     pdf.add_page()
@@ -153,35 +157,37 @@ def create_pdf(doctor_name, name, age, text, notes, vitals):
     pdf.line(10, 30, 200, 30)
     pdf.ln(15)
     
-    # Patient Info Row
+    # Patient Info Row (Cleaned of 'nan')
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(100, 10, f"Patient: {name}", ln=0)
-    pdf.cell(90, 10, f"Age: {age} | Date: {datetime.now().strftime('%Y-%m-%d')}", ln=1, align='R')
+    pdf.cell(100, 10, f"Patient: {clean_nan(name)}", ln=0)
+    pdf.cell(90, 10, f"Age: {clean_nan(age)} | Date: {datetime.now().strftime('%Y-%m-%d')}", ln=1, align='R')
     pdf.ln(5)
 
-    # Vitals Grid
+    # Vitals Grid (Cleaned of 'nan')
     pdf.set_font("Arial", 'B', 10)
     pdf.set_fill_color(240, 240, 240)
-    pdf.cell(45, 8, f"BP: {vitals.get('BP', '--')}", 1, 0, 'C', 1)
-    pdf.cell(45, 8, f"Pulse: {vitals.get('Pulse', '--')} bpm", 1, 0, 'C', 1)
-    pdf.cell(45, 8, f"Weight: {vitals.get('Weight', '--')} kg", 1, 0, 'C', 1)
-    pdf.cell(45, 8, f"Temp: {vitals.get('Temp', '--')} F", 1, 1, 'C', 1)
+    pdf.cell(45, 8, f"BP: {clean_nan(vitals.get('BP'))}", 1, 0, 'C', 1)
+    pdf.cell(45, 8, f"Pulse: {clean_nan(vitals.get('Pulse'))} bpm", 1, 0, 'C', 1)
+    pdf.cell(45, 8, f"Weight: {clean_nan(vitals.get('Weight'))} kg", 1, 0, 'C', 1)
+    pdf.cell(45, 8, f"Temp: {clean_nan(vitals.get('Temp'))} F", 1, 1, 'C', 1)
     pdf.ln(10)
 
-    # Prescription Body
+    # Prescription Body (STRICT FILTERING)
     pdf.set_font("Arial", size=11)
     clean_rx = clean_text_forcefully(text)
     
-    # Remove redundant Name/Diagnosis lines from body if printed in header
+    # Filter out redundant lines or AI preamble
     clean_lines = []
     for line in clean_rx.split('\n'):
-        if "Patient Name:" not in line:
-            clean_lines.append(line)
+        # Skip lines that are just "Patient Name: ..." since we printed that in header
+        if "Patient Name:" in line or "Age:" in line:
+            continue
+        clean_lines.append(line)
             
     for line in clean_lines:
         line = line.strip()
         if not line: pdf.ln(5); continue
-        if line.endswith(":") or "Diagnosis:" in line:
+        if line.endswith(":") or "Diagnosis:" in line or "Rx:" in line:
             pdf.set_font("Arial", 'B', 12)
             pdf.cell(0, 8, line, ln=True)
         else:
@@ -189,10 +195,10 @@ def create_pdf(doctor_name, name, age, text, notes, vitals):
             pdf.multi_cell(0, 7, line)
 
     # Doctor's Notes Section
-    if notes and notes.strip() != "":
+    if notes and clean_nan(notes) != "--" and notes.strip() != "":
         pdf.ln(10)
         pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 8, "Clinical Notes / Remarks:", ln=True)
+        pdf.cell(0, 8, "Clinical Notes:", ln=True)
         pdf.set_font("Arial", 'I', 11)
         pdf.multi_cell(0, 7, clean_text_forcefully(notes))
 
@@ -225,7 +231,7 @@ def get_whatsapp_link(phone, text):
     encoded = urllib.parse.quote(final_msg)
     return f"https://wa.me/{phone}?text={encoded}"
 
-# 6. CONFIG & SECRETS
+# 6. CONFIG
 try:
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 except:
@@ -233,17 +239,16 @@ except:
 
 # 7. UI NAVIGATION
 with st.sidebar:
-    st.title("🏛️ Asclepius V8")
+    st.title("🏛️ Asclepius V9")
     st.caption(f"Physician: {st.session_state.doctor_name}")
     st.markdown("---")
     menu = st.radio("NAVIGATION", ["Consultation Chamber", "Archive & Records", "Analytics Dashboard", "Settings"])
 
-# --- CONSULTATION CHAMBER (UPDATED) ---
 if menu == "Consultation Chamber":
     st.header(f"🎙️ Session with {st.session_state.doctor_name}")
     
-    # Initialize Session State Variables
     if "draft" not in st.session_state: st.session_state.draft = None
+    # Initialize all vitals with EMPTY strings, not None/NaN
     if "v_age" not in st.session_state: st.session_state.v_age = ""
     if "v_bp" not in st.session_state: st.session_state.v_bp = ""
     if "v_pulse" not in st.session_state: st.session_state.v_pulse = ""
@@ -259,30 +264,33 @@ if menu == "Consultation Chamber":
         if audio and st.button("Analyze Audio ⚡"):
             transcription = client.audio.transcriptions.create(file=("rec.wav", audio), model="whisper-large-v3", response_format="text")
             
-            # --- MEDICAL CROSS-CHECK PROMPT ---
+            # --- THE "SILENT SCRIBE" PROMPT ---
             system_prompt = """
-            You are an expert Medical Scribe and Editor.
-            Your Goal: Create a perfect prescription.
-            CRITICAL RULE: Cross-check drug names against the diagnosis.
-            - If the user says "Nagstorm" for Migraine, correct it to "Naxdom" or "Naproxen".
-            - If the user says "Dolo" for fever, write "Dolo-650 (Paracetamol)".
-            - Fix phonetic errors.
-            Format:
+            You are a SILENT Medical Transcription Machine.
+            Your ONLY job is to extract the Patient Name, Diagnosis, and Rx.
+            
+            STRICT RULES:
+            1. DO NOT add any intro (e.g., "Here is the prescription").
+            2. DO NOT add any outro or suggestions.
+            3. DO NOT auto-correct specific drug names. If you hear "Nagstorm", write "Nagstorm".
+            4. DO NOT offer medical advice.
+            
+            Output ONLY this format:
             Patient Name: [Name]
             Diagnosis: [Diagnosis]
-            Rx: [Medications with dosage]
+            Rx: [Medication list with dosage]
             """
             
             res = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": transcription}]
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": transcription}],
+                temperature=0.1  # Low temperature = Less "creativity/chat"
             )
             st.session_state.draft = clean_text_forcefully(res.choices[0].message.content)
             st.rerun()
             
     with col2:
         st.markdown("### 2. Vitals & Patient Info")
-        # NEW: 5-Column Grid (Age + Vitals)
         v0, v1, v2, v3, v4 = st.columns(5)
         st.session_state.v_age = v0.text_input("Age", st.session_state.v_age)
         st.session_state.v_bp = v1.text_input("BP", st.session_state.v_bp)
@@ -293,8 +301,6 @@ if menu == "Consultation Chamber":
         st.markdown("### 3. Prescription & Notes")
         if st.session_state.draft:
             body = st.text_area("Prescription Draft", st.session_state.draft, height=300)
-            
-            # NEW: Doctor's Notes
             notes = st.text_area("👨‍⚕️ Doctor's Private Notes / Remarks (Optional)", st.session_state.v_notes, height=100)
             
             # Parsing for Auto-Title
@@ -307,6 +313,7 @@ if menu == "Consultation Chamber":
                 save_data(st.session_state.doctor_name, name, st.session_state.v_age, diag, body, notes,
                           st.session_state.v_bp, st.session_state.v_pulse, st.session_state.v_weight, st.session_state.v_temp)
                 st.success("Record Archived Successfully!")
+                
                 # Reset fields
                 st.session_state.v_age = ""
                 st.session_state.v_bp = ""
@@ -314,9 +321,9 @@ if menu == "Consultation Chamber":
                 st.session_state.v_weight = ""
                 st.session_state.v_temp = ""
                 st.session_state.v_notes = ""
+                st.session_state.draft = None
                 st.rerun()
 
-# --- ARCHIVES ---
 elif menu == "Archive & Records":
     st.header("📂 Archives")
     df = load_data()
@@ -334,16 +341,15 @@ elif menu == "Archive & Records":
             
             c1.write(f"📅 {row['Date']}")
             c2.write(f"🕒 {row['Time']}")
-            # Show Name AND Age in the list
-            age_display = f"(Age: {row['Age']})" if row['Age'] and row['Age'] != "--" else ""
-            c3.markdown(f"**{row['Patient Name']}** {age_display}\n\n_{row['Diagnosis']}_")
+            # Safe Age display
+            age_display = f"(Age: {clean_nan(row['Age'])})" if clean_nan(row['Age']) != "--" else ""
+            c3.markdown(f"**{clean_nan(row['Patient Name'])}** {age_display}\n\n_{clean_nan(row['Diagnosis'])}_")
             
             with c4:
                 b1, b2 = st.columns(2)
-                # Pack vitals & notes for PDF
-                vitals_dict = {"BP": row.get("BP", "--"), "Pulse": row.get("Pulse", "--"), "Weight": row.get("Weight", "--"), "Temp": row.get("Temp", "--")}
-                pdf_data = create_pdf(row['Doctor'], row['Patient Name'], row['Age'], row['Full_Prescription'], row.get('Doctors_Notes', ''), vitals_dict)
-                b1.download_button("📄 PDF", pdf_data, file_name=f"{row['Patient Name']}.pdf", key=f"pdf_{index}")
+                vitals_dict = {"BP": row.get("BP"), "Pulse": row.get("Pulse"), "Weight": row.get("Weight"), "Temp": row.get("Temp")}
+                pdf_data = create_pdf(row['Doctor'], row['Patient Name'], row['Age'], row['Full_Prescription'], row.get('Doctors_Notes'), vitals_dict)
+                b1.download_button("📄 PDF", pdf_data, file_name=f"{clean_nan(row['Patient Name'])}.pdf", key=f"pdf_{index}")
                 
                 if b2.button("🗑️ DEL", key=f"del_{index}"):
                     delete_record(index)
@@ -370,7 +376,6 @@ elif menu == "Archive & Records":
     else:
         st.info("No records found.")
 
-# --- ANALYTICS ---
 elif menu == "Analytics Dashboard":
     st.header("📊 Clinic Analytics")
     df = load_data()
@@ -392,7 +397,6 @@ elif menu == "Analytics Dashboard":
             st.subheader("Patient Traffic")
             st.line_chart(df['Date'].value_counts().sort_index(), color="#D4AF37")
 
-# --- SETTINGS ---
 elif menu == "Settings":
     st.header("⚙️ Settings")
     new_name = st.text_input("Physician Name", value=st.session_state.doctor_name)
